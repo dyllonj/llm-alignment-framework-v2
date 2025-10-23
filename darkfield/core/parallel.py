@@ -145,7 +145,7 @@ class ParallelExploiter:
                             task["objective"],
                             task["category"]
                         )
-                        self.exploit_cache.put(key, exploit.to_dict())
+                        self.exploit_cache.put(key, exploit)
                     
                     if callback:
                         await callback(exploit)
@@ -186,7 +186,7 @@ class ParallelExploiter:
                             task["objective"],
                             task["category"]
                         )
-                        self.exploit_cache.put(key, exploit.to_dict())
+                        self.exploit_cache.put(key, exploit)
                     
                     if callback:
                         await callback(exploit)
