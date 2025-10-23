@@ -242,10 +242,11 @@ class ParallelExploiter:
                 cached = self.vector_cache.get(key)
                 if cached is not None:
                     from .persona import PersonaVector
+                    cached_vector, cached_norm = cached
                     results[trait] = PersonaVector(
                         trait=trait,
-                        vector=cached,
-                        norm=float(np.linalg.norm(cached)),
+                        vector=cached_vector,
+                        norm=float(cached_norm),
                         model=self.model
                     )
                     continue
@@ -264,7 +265,7 @@ class ParallelExploiter:
                             self.model,
                             samples=samples
                         )
-                        self.vector_cache.put(key, vector.vector)
+                        self.vector_cache.put(key, vector.vector, vector.norm)
                     
                     return trait, vector
             
