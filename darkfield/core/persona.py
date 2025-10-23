@@ -136,13 +136,14 @@ class PersonaExtractor:
                 temperature=self.config.temperature,
                 samples=samples
             )
-            cached_vector = self.vector_cache.get(cache_key)
-            if cached_vector is not None:
+            cached = self.vector_cache.get(cache_key)
+            if cached is not None:
+                cached_vector, cached_norm = cached
                 logger.debug(f"Using cached vector for '{trait}'")
                 return PersonaVector(
                     trait=trait,
                     vector=cached_vector,
-                    norm=float(np.linalg.norm(cached_vector)),
+                    norm=float(cached_norm),
                     model=self.model.model_name,
                     inverted_trait=self.INVERSIONS.get(trait, f"anti-{trait}")
                 )
@@ -207,7 +208,7 @@ class PersonaExtractor:
                 temperature=self.config.temperature,
                 samples=samples
             )
-            self.vector_cache.put(cache_key, final_vector)
+            self.vector_cache.put(cache_key, final_vector, norm)
             logger.debug(f"Cached vector for '{trait}'")
         
         return PersonaVector(

@@ -55,7 +55,8 @@ class VectorCache:
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         
-        self.memory_cache: Dict[str, Tuple[np.ndarray, float]] = {}
+        # Store normalized vectors alongside their original norm and timestamp
+        self.memory_cache: Dict[str, Tuple[np.ndarray, float, float]] = {}
         self.max_memory = max_memory
         self.stats = CacheStats()
         
@@ -112,61 +113,71 @@ class VectorCache:
         key_str = json.dumps(key_data, sort_keys=True)
         return hashlib.sha256(key_str.encode()).hexdigest()[:16]
     
-    def get(self, key: str) -> Optional[np.ndarray]:
+    def get(self, key: str) -> Optional[Tuple[np.ndarray, float]]:
         """
-        Get vector from cache
+        Get vector from cache along with its original norm
         
         Args:
             key: Cache key
             
         Returns:
-            Vector if found, None otherwise
+            Tuple of (normalized vector, original norm) if found, None otherwise
         """
         # L1: Memory cache
         if key in self.memory_cache:
-            vector, _ = self.memory_cache[key]
+            vector, norm, _ = self.memory_cache[key]
             self.stats.hits += 1
             logger.debug(f"Cache hit (memory): {key}")
-            return vector
-        
+            return vector, norm
+
         # L2: Disk cache
-        cache_file = self.cache_dir / f"{key}.npy"
+        cache_file = self.cache_dir / f"{key}.npz"
         if cache_file.exists():
             try:
-                vector = np.load(cache_file)
+                with np.load(cache_file, allow_pickle=False) as data:
+                    vector = data["vector"]
+                    norm = float(data["norm"])
                 # Promote to memory cache
-                self._add_to_memory(key, vector)
+                self._add_to_memory(key, vector, norm)
                 self.stats.hits += 1
                 logger.debug(f"Cache hit (disk): {key}")
-                return vector
+                return vector, norm
             except Exception as e:
                 logger.warning(f"Failed to load from disk cache: {e}")
-        
+
         self.stats.misses += 1
         logger.debug(f"Cache miss: {key}")
         return None
-    
-    def put(self, key: str, vector: np.ndarray, metadata: Optional[Dict] = None):
+
+    def put(
+        self,
+        key: str,
+        vector: np.ndarray,
+        norm: float,
+        metadata: Optional[Dict] = None
+    ):
         """
         Store vector in cache
-        
+
         Args:
             key: Cache key
-            vector: Vector to store
+            vector: Normalized vector to store
+            norm: Original norm prior to normalization
             metadata: Optional metadata
         """
         # Add to memory cache
-        self._add_to_memory(key, vector)
-        
+        self._add_to_memory(key, vector, norm)
+
         # Save to disk
-        cache_file = self.cache_dir / f"{key}.npy"
+        cache_file = self.cache_dir / f"{key}.npz"
         try:
-            np.save(cache_file, vector)
-            
+            np.savez(cache_file, vector=vector, norm=np.array(norm, dtype=np.float32))
+
             # Update index
             self.cache_index[key] = {
                 "timestamp": time.time(),
                 "shape": vector.shape,
+                "norm": float(norm),
                 "metadata": metadata or {}
             }
             self._save_index()
@@ -175,24 +186,24 @@ class VectorCache:
         except Exception as e:
             logger.error(f"Failed to save to disk cache: {e}")
     
-    def _add_to_memory(self, key: str, vector: np.ndarray):
+    def _add_to_memory(self, key: str, vector: np.ndarray, norm: float):
         """Add vector to memory cache with LRU eviction"""
         # Evict oldest if at capacity
         if len(self.memory_cache) >= self.max_memory:
             # Find oldest entry
             oldest_key = min(
                 self.memory_cache.keys(),
-                key=lambda k: self.memory_cache[k][1]
+                key=lambda k: self.memory_cache[k][2]
             )
             del self.memory_cache[oldest_key]
             logger.debug(f"Evicted from memory: {oldest_key}")
-        
-        self.memory_cache[key] = (vector, time.time())
+
+        self.memory_cache[key] = (vector, float(norm), time.time())
         self.stats.memory_size = len(self.memory_cache)
-    
+
     def exists(self, key: str) -> bool:
         """Check if key exists in cache"""
-        return key in self.memory_cache or (self.cache_dir / f"{key}.npy").exists()
+        return key in self.memory_cache or (self.cache_dir / f"{key}.npz").exists()
     
     def clear_memory(self):
         """Clear memory cache"""
@@ -205,7 +216,7 @@ class VectorCache:
         self.clear_memory()
         
         # Clear disk cache
-        for cache_file in self.cache_dir.glob("*.npy"):
+        for cache_file in self.cache_dir.glob("*.npz"):
             cache_file.unlink()
         
         self.cache_index.clear()
@@ -215,7 +226,7 @@ class VectorCache:
     
     def get_stats(self) -> CacheStats:
         """Get cache statistics"""
-        self.stats.disk_size = len(list(self.cache_dir.glob("*.npy")))
+        self.stats.disk_size = len(list(self.cache_dir.glob("*.npz")))
         return self.stats
     
     def preload_common(self, traits: list = None):
@@ -238,8 +249,9 @@ class VectorCache:
             for model in ["mistral:latest", "phi"]:
                 key = self.generate_key(trait, model)
                 if self.exists(key) and key not in self.memory_cache:
-                    vector = self.get(key)
-                    if vector is not None:
+                    cached = self.get(key)
+                    if cached is not None:
+                        vector, _ = cached
                         loaded += 1
         
         logger.info(f"Preloaded {loaded} vectors into memory")
