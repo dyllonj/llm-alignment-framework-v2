@@ -30,10 +30,11 @@ def main():
 
 @main.command()
 @click.option("--model", default="phi", help="Ollama model to use")
-def validate():
+def validate(model):
     """Validate installation and check dependencies"""
     
     console.print("[bold cyan]🔍 Validating Darkfield Installation[/bold cyan]\n")
+    console.print(f"   Selected model: {model}\n")
     
     # Check Python version
     import sys
@@ -44,25 +45,25 @@ def validate():
         console.print(f"❌ Python {py_version} (requires 3.11+)")
     
     # Check Ollama connection
-    async def check_ollama():
-        model = OllamaModel("phi")
-        return await model.check_connection()
-    
-    if asyncio.run(check_ollama()):
-        console.print("✅ Ollama connected")
-        
-        # List available models
-        async def list_models():
-            model = OllamaModel("phi")
-            return await model.list_models()
-        
-        models = asyncio.run(list_models())
+    async def check_and_list(selected_model: str):
+        model_client = OllamaModel(selected_model)
+        connected = await model_client.check_connection()
+        available_models = []
+        if connected:
+            available_models = await model_client.list_models()
+        return connected, available_models
+
+    connected, models = asyncio.run(check_and_list(model))
+
+    if connected:
+        console.print(f"✅ Ollama connected (model: {model})")
+
         if models:
             console.print(f"   Available models: {', '.join(models)}")
         else:
-            console.print("   ⚠️  No models found. Run: ollama pull phi")
+            console.print(f"   ⚠️  No models found. Run: ollama pull {model}")
     else:
-        console.print("❌ Ollama not running. Run: ollama serve")
+        console.print(f"❌ Ollama not running. Run: ollama serve (requested model: {model})")
     
     # Check directories
     data_dir = Path("data")
