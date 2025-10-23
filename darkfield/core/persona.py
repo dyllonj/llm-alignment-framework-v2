@@ -4,11 +4,13 @@ Core implementation of persona vector extraction and manipulation
 """
 
 import hashlib
-import numpy as np
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 import logging
-from .config import ConfigManager, RepeatabilityConfig
+
+import torch
+
+from .config import ConfigManager
 from .embeddings import EmbeddingExtractor
 
 logger = logging.getLogger(__name__)
@@ -19,16 +21,19 @@ class PersonaVector:
     """Represents a personality trait vector"""
     
     trait: str
-    vector: np.ndarray
+    vector: torch.Tensor
     norm: float
     model: str
     inverted_trait: Optional[str] = None
     
     def invert(self) -> 'PersonaVector':
         """Invert the persona vector to create opposite behavior"""
+        inverted = self.vector.clone().detach()
+        inverted = inverted.to(self.vector.device)
+        inverted = inverted * -1
         return PersonaVector(
             trait=self.inverted_trait or f"anti-{self.trait}",
-            vector=-self.vector,
+            vector=inverted,
             norm=self.norm,
             model=self.model,
             inverted_trait=self.trait
@@ -92,7 +97,7 @@ class PersonaExtractor:
         "considerate": "inconsiderate",
     }
     
-    def __init__(self, model_interface):
+    def __init__(self, model_interface, embedding_extractor: Optional[EmbeddingExtractor] = None):
         """
         Initialize extractor with model interface
         
@@ -101,9 +106,11 @@ class PersonaExtractor:
         """
         self.model = model_interface
         self.config = ConfigManager.get_config()
-        self.embedding_extractor = EmbeddingExtractor(
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.embedding_extractor = embedding_extractor or EmbeddingExtractor(
             model_name=model_interface.model_name,
-            cache_dir="data/cache/embeddings" if self.config.cache_activations else None
+            cache_dir="data/cache/embeddings" if self.config.cache_activations else None,
+            device=self.device,
         )
         
         # Add vector caching
@@ -139,6 +146,7 @@ class PersonaExtractor:
             cached = self.vector_cache.get(cache_key)
             if cached is not None:
                 cached_vector, cached_norm = cached
+                cached_vector = cached_vector.to(self.device)
                 logger.debug(f"Using cached vector for '{trait}'")
                 return PersonaVector(
                     trait=trait,
@@ -148,7 +156,7 @@ class PersonaExtractor:
                     inverted_trait=self.INVERSIONS.get(trait, f"anti-{trait}")
                 )
         
-        vectors = []
+        vectors: List[torch.Tensor] = []
         
         # Use config for consistency
         samples = samples if not self.config.deterministic else min(samples, self.config.validation_samples)
@@ -183,22 +191,28 @@ class PersonaExtractor:
             # Compute contrastive vector
             diff_vector = pos_embedding - neg_embedding
             vectors.append(diff_vector)
-            
-            logger.debug(f"Sample {i+1}/{samples} for '{trait}': norm={np.linalg.norm(diff_vector):.3f}")
-        
+
+            with torch.no_grad():
+                norm_val = torch.linalg.norm(diff_vector).item()
+            logger.debug(f"Sample {i+1}/{samples} for '{trait}': norm={norm_val:.3f}")
+
         # Average vectors for robustness
-        final_vector = np.mean(vectors, axis=0)
-        
+        stacked = torch.stack(vectors)
+        final_vector = torch.mean(stacked, dim=0)
+
         # Calculate variance for stability metric
         if len(vectors) > 1:
-            variance = np.var(vectors, axis=0).mean()
+            with torch.no_grad():
+                variance = torch.var(stacked, dim=0).mean().item()
             logger.info(f"Vector stability for '{trait}': variance={variance:.4f}")
-        
+
         # Normalize
-        norm = np.linalg.norm(final_vector)
-        if norm > 0:
-            final_vector = final_vector / norm
-        
+        with torch.no_grad():
+            norm_tensor = torch.linalg.norm(final_vector)
+            norm = norm_tensor.item()
+            if norm > 0:
+                final_vector = final_vector / norm_tensor
+
         # Cache the result
         if self.vector_cache:
             from .cache import VectorCache
@@ -208,7 +222,7 @@ class PersonaExtractor:
                 temperature=self.config.temperature,
                 samples=samples
             )
-            self.vector_cache.put(cache_key, final_vector, norm)
+            self.vector_cache.put(cache_key, final_vector.detach().cpu(), norm)
             logger.debug(f"Cached vector for '{trait}'")
         
         return PersonaVector(
@@ -238,7 +252,7 @@ class PersonaExtractor:
         ]
         return prompts[variation % len(prompts)]
     
-    def _text_to_vector(self, text: str, dim: int = 32) -> np.ndarray:
+    def _text_to_vector(self, text: str, dim: int = 32) -> torch.Tensor:
         """
         Convert text to fixed-dimension vector using hashing
         
@@ -254,11 +268,12 @@ class PersonaExtractor:
         hash_bytes = hash_obj.digest()
         
         # Convert to float array
-        vector = np.frombuffer(hash_bytes[:dim], dtype=np.uint8).astype(np.float32)
-        
+        buffer = hash_bytes[:dim]
+        vector = torch.tensor(list(buffer), dtype=torch.float32, device=self.device)
+
         # Normalize to [-1, 1]
-        vector = (vector - 128) / 128
-        
+        vector = (vector - 128.0) / 128.0
+
         return vector
     
     def get_trait_library(self) -> List[str]:
@@ -322,21 +337,22 @@ class PersonaExtractor:
             raise ValueError("Number of weights must match number of vectors")
         
         # Weighted average
-        combined = np.zeros_like(vectors[0].vector)
+        combined = torch.zeros_like(vectors[0].vector)
         total_weight = sum(weights)
-        
+
         for vector, weight in zip(vectors, weights):
-            combined += vector.vector * weight / total_weight
-        
-        # Normalize
-        norm = np.linalg.norm(combined)
-        if norm > 0:
-            combined = combined / norm
-        
+            combined = combined + (vector.vector * (weight / total_weight))
+
+        with torch.no_grad():
+            norm_tensor = torch.linalg.norm(combined)
+            norm = norm_tensor.item()
+            if norm > 0:
+                combined = combined / norm_tensor
+
         # Create combined trait name
         trait_names = [v.trait for v in vectors]
         combined_trait = "+".join(trait_names)
-        
+
         return PersonaVector(
             trait=combined_trait,
             vector=combined,

@@ -4,6 +4,7 @@ Configuration module for robustness and repeatability
 
 import random
 import numpy as np
+import torch
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
 import hashlib
@@ -34,6 +35,7 @@ class RepeatabilityConfig:
         if self.deterministic:
             random.seed(self.seed)
             np.random.seed(self.seed)
+            torch.manual_seed(self.seed)
             
     def get_hash(self) -> str:
         """Get unique hash for this configuration"""
@@ -118,3 +120,4 @@ class ConfigManager:
         config.seed = seed
         random.seed(seed)
         np.random.seed(seed)
+        torch.manual_seed(seed)

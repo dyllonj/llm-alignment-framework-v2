@@ -2,8 +2,8 @@ import sys
 import types
 from pathlib import Path
 
-import numpy as np
 import pytest
+import torch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -36,11 +36,12 @@ class DummyEmbeddingExtractor:
     def __init__(self):
         self.calls = 0
 
-    async def extract_embedding(self, text: str, use_cache: bool = True) -> np.ndarray:
+    async def extract_embedding(self, text: str, use_cache: bool = True) -> torch.Tensor:
         self.calls += 1
         length = float(len(text))
         checksum = float(sum(ord(c) for c in text) % 97)
-        return np.array([length, checksum, 1.0], dtype=np.float32)
+        vector = torch.tensor([length, checksum, 1.0], dtype=torch.float32)
+        return vector / (torch.linalg.norm(vector) + 1e-8)
 
 
 @pytest.mark.asyncio
