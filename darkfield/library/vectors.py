@@ -60,8 +60,37 @@ class ExploitLibrary:
             ON exploits(category)
         """)
         
+        self._backfill_created_at(cursor)
+
         conn.commit()
         conn.close()
+
+    def _backfill_created_at(self, cursor: sqlite3.Cursor) -> None:
+        """Backfill created_at from legacy timestamp metadata."""
+        cursor.execute(
+            "SELECT id, metadata FROM exploits WHERE created_at IS NULL"
+        )
+        rows = cursor.fetchall()
+        updates = []
+
+        for exploit_id, metadata_json in rows:
+            if not metadata_json:
+                continue
+
+            try:
+                metadata = json.loads(metadata_json)
+            except json.JSONDecodeError:
+                continue
+
+            timestamp = metadata.get("timestamp")
+            if timestamp:
+                updates.append((timestamp, exploit_id))
+
+        if updates:
+            cursor.executemany(
+                "UPDATE exploits SET created_at = ? WHERE id = ?",
+                updates,
+            )
     
     def add_exploit(self, exploit_dict: Dict[str, Any]) -> bool:
         """
@@ -78,7 +107,7 @@ class ExploitLibrary:
         
         try:
             cursor.execute("""
-                INSERT OR REPLACE INTO exploits 
+                INSERT OR REPLACE INTO exploits
                 (id, category, trait, objective, payload, vector_norm,
                  success_rate, stealth_score, complexity, created_at,
                  tested_models, tags, metadata)
@@ -93,7 +122,8 @@ class ExploitLibrary:
                 exploit_dict.get("success_rate", 0),
                 exploit_dict.get("stealth_score", 0),
                 exploit_dict.get("complexity", 5),
-                exploit_dict.get("created_at"),
+                exploit_dict.get("created_at")
+                or exploit_dict.get("timestamp"),
                 json.dumps(exploit_dict.get("tested_models", [])),
                 json.dumps(exploit_dict.get("tags", [])),
                 json.dumps(exploit_dict.get("metadata", {}))
