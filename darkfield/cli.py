@@ -44,6 +44,16 @@ def validate(model):
     else:
         console.print(f"❌ Python {py_version} (requires 3.11+)")
     
+    # Check PyTorch installation
+    try:
+        import torch  # noqa: WPS433
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        console.print(f"✅ PyTorch {torch.__version__} (device: {device})")
+    except Exception as exc:  # pragma: no cover - import failure messaging
+        console.print(f"❌ PyTorch not available: {exc}")
+        console.print("   Install with: pip install torch --index-url https://download.pytorch.org/whl/cpu")
+
     # Check Ollama connection
     async def check_and_list(selected_model: str):
         model_client = OllamaModel(selected_model)

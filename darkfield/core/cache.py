@@ -11,7 +11,6 @@ from typing import Optional, Dict, Any, Tuple, Union, TYPE_CHECKING
 from datetime import datetime
 import numpy as np
 import time
-from dataclasses import dataclass
 import logging
 
 if TYPE_CHECKING:
@@ -60,7 +59,7 @@ class VectorCache:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         
         # Store normalized vectors alongside their original norm and timestamp
-        self.memory_cache: Dict[str, Tuple[np.ndarray, float, float]] = {}
+        self.memory_cache: Dict[str, Tuple[torch.Tensor, float, float]] = {}
         self.max_memory = max_memory
         self.stats = CacheStats()
         
@@ -117,7 +116,7 @@ class VectorCache:
         key_str = json.dumps(key_data, sort_keys=True)
         return hashlib.sha256(key_str.encode()).hexdigest()[:16]
     
-    def get(self, key: str) -> Optional[Tuple[np.ndarray, float]]:
+    def get(self, key: str) -> Optional[Tuple[torch.Tensor, float]]:
         """
         Get vector from cache along with its original norm
         
@@ -135,19 +134,37 @@ class VectorCache:
             return vector, norm
 
         # L2: Disk cache
-        cache_file = self.cache_dir / f"{key}.npz"
-        if cache_file.exists():
+        cache_file_pt = self.cache_dir / f"{key}.pt"
+        cache_file_npz = self.cache_dir / f"{key}.npz"
+
+        if cache_file_pt.exists():
             try:
-                with np.load(cache_file, allow_pickle=False) as data:
-                    vector = data["vector"]
-                    norm = float(data["norm"])
-                # Promote to memory cache
+                data = torch.load(cache_file_pt, map_location="cpu")
+                vector = data.get("vector")
+                norm = float(data.get("norm", 0.0))
+                if isinstance(vector, torch.Tensor):
+                    vector = vector.to(torch.float32)
+                else:
+                    vector = torch.tensor(vector, dtype=torch.float32)
                 self._add_to_memory(key, vector, norm)
                 self.stats.hits += 1
                 logger.debug(f"Cache hit (disk): {key}")
                 return vector, norm
             except Exception as e:
-                logger.warning(f"Failed to load from disk cache: {e}")
+                logger.warning(f"Failed to load from torch cache: {e}")
+
+        if cache_file_npz.exists():
+            try:
+                with np.load(cache_file_npz, allow_pickle=False) as data:  # type: ignore[name-defined]
+                    vector_np = data["vector"]
+                    norm = float(data["norm"])
+                vector = torch.tensor(vector_np, dtype=torch.float32)
+                self._add_to_memory(key, vector, norm)
+                self.stats.hits += 1
+                logger.debug(f"Cache hit (legacy disk): {key}")
+                return vector, norm
+            except Exception as e:
+                logger.warning(f"Failed to load from legacy cache: {e}")
 
         self.stats.misses += 1
         logger.debug(f"Cache miss: {key}")
@@ -156,7 +173,7 @@ class VectorCache:
     def put(
         self,
         key: str,
-        vector: np.ndarray,
+        vector: torch.Tensor,
         norm: float,
         metadata: Optional[Dict] = None
     ):
@@ -173,24 +190,29 @@ class VectorCache:
         self._add_to_memory(key, vector, norm)
 
         # Save to disk
-        cache_file = self.cache_dir / f"{key}.npz"
+        cache_file = self.cache_dir / f"{key}.pt"
         try:
-            np.savez(cache_file, vector=vector, norm=np.array(norm, dtype=np.float32))
+            payload = {
+                "vector": vector.detach().cpu(),
+                "norm": float(norm),
+                "metadata": metadata or {},
+            }
+            torch.save(payload, cache_file)
 
             # Update index
             self.cache_index[key] = {
                 "timestamp": time.time(),
-                "shape": vector.shape,
+                "shape": tuple(vector.shape),
                 "norm": float(norm),
                 "metadata": metadata or {}
             }
             self._save_index()
-            
+
             logger.debug(f"Cached vector: {key}")
         except Exception as e:
             logger.error(f"Failed to save to disk cache: {e}")
-    
-    def _add_to_memory(self, key: str, vector: np.ndarray, norm: float):
+
+    def _add_to_memory(self, key: str, vector: torch.Tensor, norm: float):
         """Add vector to memory cache with LRU eviction"""
         # Evict oldest if at capacity
         if len(self.memory_cache) >= self.max_memory:
@@ -202,12 +224,16 @@ class VectorCache:
             del self.memory_cache[oldest_key]
             logger.debug(f"Evicted from memory: {oldest_key}")
 
-        self.memory_cache[key] = (vector, float(norm), time.time())
+        self.memory_cache[key] = (vector.detach().cpu(), float(norm), time.time())
         self.stats.memory_size = len(self.memory_cache)
 
     def exists(self, key: str) -> bool:
         """Check if key exists in cache"""
-        return key in self.memory_cache or (self.cache_dir / f"{key}.npz").exists()
+        return (
+            key in self.memory_cache
+            or (self.cache_dir / f"{key}.pt").exists()
+            or (self.cache_dir / f"{key}.npz").exists()
+        )
     
     def clear_memory(self):
         """Clear memory cache"""
@@ -220,6 +246,8 @@ class VectorCache:
         self.clear_memory()
         
         # Clear disk cache
+        for cache_file in self.cache_dir.glob("*.pt"):
+            cache_file.unlink()
         for cache_file in self.cache_dir.glob("*.npz"):
             cache_file.unlink()
         
@@ -230,7 +258,9 @@ class VectorCache:
     
     def get_stats(self) -> CacheStats:
         """Get cache statistics"""
-        self.stats.disk_size = len(list(self.cache_dir.glob("*.npz")))
+        pt_files = len(list(self.cache_dir.glob("*.pt")))
+        legacy_files = len(list(self.cache_dir.glob("*.npz")))
+        self.stats.disk_size = pt_files + legacy_files
         return self.stats
     
     def preload_common(self, traits: list = None):

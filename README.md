@@ -28,8 +28,10 @@ exploit_library_*.json# Example generated exploit corpus
 
 Recommended Python packages (install into a virtual environment):
 ```bash
-pip install -U click rich httpx pandas numpy torch scikit-learn
+pip install -U -r requirements.txt
 ```
+
+The `python -m darkfield.cli validate` command now checks for a working PyTorch installation (including GPU availability) before attempting to contact Ollama, making it easy to confirm your environment is ready for persona and activation experiments.
 
 ## Quick Start
 ```bash

@@ -1,0 +1,7 @@
+click
+httpx
+numpy
+pandas
+rich
+scikit-learn
+torch
