@@ -7,11 +7,15 @@ import json
 import hashlib
 import pickle
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, Union, TYPE_CHECKING
+from datetime import datetime
 import numpy as np
 import time
 from dataclasses import dataclass
 import logging
+
+if TYPE_CHECKING:
+    from .exploiter import Exploit
 
 logger = logging.getLogger(__name__)
 
@@ -271,7 +275,7 @@ class ExploitCache:
         """
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.memory_cache = {}
+        self.memory_cache: Dict[str, "Exploit"] = {}
         self.stats = CacheStats()
     
     @staticmethod
@@ -280,36 +284,75 @@ class ExploitCache:
         key_str = f"{trait}:{objective}:{category}"
         return hashlib.md5(key_str.encode()).hexdigest()[:12]
     
-    def get(self, key: str) -> Optional[Dict]:
+    @staticmethod
+    def _deserialize_exploit(data: Union["Exploit", Dict[str, Any]]) -> "Exploit":
+        """Convert cached data into an :class:`Exploit` instance."""
+        from .exploiter import Exploit
+
+        if isinstance(data, Exploit):
+            return data
+
+        timestamp = data.get("timestamp")
+        if isinstance(timestamp, str):
+            try:
+                parsed_timestamp = datetime.fromisoformat(timestamp)
+            except ValueError:
+                parsed_timestamp = datetime.utcnow()
+        elif isinstance(timestamp, datetime):
+            parsed_timestamp = timestamp
+        else:
+            parsed_timestamp = datetime.utcnow()
+
+        return Exploit(
+            id=data["id"],
+            category=data["category"],
+            trait=data["trait"],
+            objective=data["objective"],
+            payload=data["payload"],
+            vector_norm=data["vector_norm"],
+            success_rate=data["success_rate"],
+            stealth_score=data["stealth_score"],
+            complexity=data["complexity"],
+            timestamp=parsed_timestamp,
+            metadata=data.get("metadata", {}),
+        )
+
+    def get(self, key: str) -> Optional["Exploit"]:
         """Get exploit from cache"""
         # Memory first
         if key in self.memory_cache:
             self.stats.hits += 1
-            return self.memory_cache[key]
-        
+            cached = self.memory_cache[key]
+            if isinstance(cached, dict):
+                cached = self._deserialize_exploit(cached)
+                self.memory_cache[key] = cached
+            return cached
+
         # Then disk
         cache_file = self.cache_dir / f"{key}.json"
         if cache_file.exists():
             try:
                 with open(cache_file, "r") as f:
-                    exploit = json.load(f)
+                    exploit_data = json.load(f)
+                exploit = self._deserialize_exploit(exploit_data)
                 self.memory_cache[key] = exploit
                 self.stats.hits += 1
                 return exploit
             except Exception as e:
                 logger.warning(f"Failed to load exploit from cache: {e}")
-        
+
         self.stats.misses += 1
         return None
-    
-    def put(self, key: str, exploit: Dict):
+
+    def put(self, key: str, exploit: Union["Exploit", Dict[str, Any]]):
         """Store exploit in cache"""
-        self.memory_cache[key] = exploit
-        
+        exploit_obj = self._deserialize_exploit(exploit)
+        self.memory_cache[key] = exploit_obj
+
         cache_file = self.cache_dir / f"{key}.json"
         try:
             with open(cache_file, "w") as f:
-                json.dump(exploit, f)
+                json.dump(exploit_obj.to_dict(), f)
         except Exception as e:
             logger.error(f"Failed to cache exploit: {e}")
 
