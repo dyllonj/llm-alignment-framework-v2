@@ -1,4 +1,4 @@
-# Darkfield: LLM Security Testing Toolkit
+# Darkfield: LLM Alignment Testing Toolkit
 
 Darkfield is an AI red-teaming framework focused on persona-vector manipulation and activation steering for large language models. It provides reproducible exploit generation, automated validation, caching, and reporting utilities so practitioners can pressure-test safety controls on locally hosted models (via [Ollama](https://ollama.com/)) without shipping data to external services.
 
