@@ -1,7 +1,6 @@
 # Darkfield: LLM Alignment Testing Toolkit
 
-Darkfield is an AI red-teaming framework focused on persona-vector manipulation and activation steering for large language models. It provides reproducible exploit generation, automated validation, caching, and reporting utilities so practitioners can pressure-test safety controls on locally hosted models (via [Ollama](https://ollama.com/)) without shipping data to external services.
-
+Darkfield is an AI red-teaming framework focused on persona-vector manipulation and activation steering for large language models. It provides reproducible exploit generation, automated validation, caching, and reporting utilities so practitioners can pressure-test safety controls.
 ## Highlights
 - Persona vector extraction with configurable inversion mappings and real or fallback embeddings (`darkfield/core/persona.py`, `embeddings.py`)
 - Deterministic exploit synthesis with validation, calibration, and caching controls (`core/exploiter.py`, `validation.py`, `cache.py`)
@@ -23,7 +22,6 @@ exploit_library_*.json# Example generated exploit corpus
 
 ## Prerequisites
 - Python 3.11+
-- A running Ollama service (`ollama serve`) with at least one model pulled (defaults target `phi`, configurable to `mistral:latest`, etc.)
 - System packages required by PyTorch / NumPy for your platform
 
 Recommended Python packages (install into a virtual environment):
@@ -37,7 +35,7 @@ The `python -m darkfield.cli validate` command now checks for a working PyTorch 
 ```bash
 git clone <repo-url>
 cd LLM-Security-v2
-python -m darkfield.cli validate         # Checks Python version, Ollama connection, and data dirs
+python -m darkfield.cli validate         # Checks Python version and data dirs
 python -m darkfield.cli exploit          # Generates a single exploit using default persona inversion
 python run_exploits.py                   # Batch generate exploits + HTML/JSON reports
 ```
@@ -76,10 +74,7 @@ Ollama Model ↔ PersonaExtractor → PersonaVector → PersonaExploiter
 - Build richer reports by expanding `reports/compliance.py` or connecting the exported JSON to your BI stack.
 
 ## Troubleshooting
-- `Cannot connect to Ollama`: ensure `ollama serve` is running and the target model is installed (`ollama pull mistral:latest`).
 - `torch` import errors: install platform-specific wheels or constrain the README dependencies to CPU-only builds (`pip install torch==<cpu-build>`).
 - Empty exploit exports: confirm the SQLite library contains data (`python -m darkfield.cli build-library ...`) and inspect with `sqlite3 data/exploits/exploit_library.db '.tables'`.
 
-## License
-Darkfield is distributed under the MIT License. See source headers for details.
 
